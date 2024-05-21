@@ -1,0 +1,83 @@
+import requests
+from bs4 import BeautifulSoup
+import re
+import threading
+import sys
+from urllib.parse import urljoin, urlparse
+
+# Event to signal when to stop scraping
+stop_scraping_event = threading.Event()
+
+def scrape_emails(soup):
+    email_regex = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b'
+    emails = re.findall(email_regex, soup.text)
+    return set(emails)
+
+def crawl_site(start_url, emails_collected):
+    pages_visited = set()
+    pages_to_visit = [start_url]
+
+    while pages_to_visit and not stop_scraping_event.is_set():
+        current_page = pages_to_visit.pop(0)
+        if current_page in pages_visited:
+            continue
+
+        try:
+            response = requests.get(current_page, headers={"User-Agent": "Mozilla/5.0"})
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            emails_found = scrape_emails(soup)
+            emails_collected.update(emails_found)
+            print(f"Scraped {len(emails_found)} emails from {current_page}")
+
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                if not href.startswith(('http:', 'https:')):
+                    href = urljoin(current_page, href)
+                if urlparse(href).netloc == urlparse(start_url).netloc:
+                    pages_to_visit.append(href)
+
+            pages_visited.add(current_page)
+
+        except requests.RequestException as e:
+            print(f"Failed to access {current_page}: {str(e)}")
+
+def listen_for_stop():
+    input("Press Enter at any time to stop scraping and return results.\n")
+    stop_scraping_event.set()
+
+def main():
+    while True:
+        stop_scraping_event.clear()
+        emails_collected = set()
+
+        print("Enter the URL of the site you want to scrape for emails (or type 'exit' to quit):")
+        start_url = input("URL: ")
+        if start_url.lower() == 'exit':
+            print("Exiting program.")
+            break
+
+        if not start_url.startswith(('http://', 'https://')):
+            start_url = 'http://' + start_url
+
+        # Start scraping in a separate thread
+        crawler_thread = threading.Thread(target=crawl_site, args=(start_url, emails_collected))
+        crawler_thread.start()
+
+        # Start listening for the stop command in a separate thread
+        stop_thread = threading.Thread(target=listen_for_stop)
+        stop_thread.start()
+
+        # Wait for either the crawler to finish or be stopped
+        crawler_thread.join()
+
+        # Ensure the stop thread also completes
+        stop_thread.join()
+
+        print(f"Total unique emails collected: {len(emails_collected)}")
+        for email in emails_collected:
+            print(email)
+
+if __name__ == '__main__':
+    main()
